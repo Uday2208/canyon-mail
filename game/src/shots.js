@@ -20,7 +20,27 @@ function throttleToward(p, target) {
 /** Steer toward the next ring (or the strip) and hold height on it. */
 function autopilot(w) {
   const p = w.plane;
-  const landing = w.ringIndex >= w.rings.length;
+  if (w.mode === 'drop' && w.dropIndex < w.zones.length) {
+    // Mail Drop: line up on the outpost, sink to a low pass, and let the
+    // parcel go over the ring. Same steering as the rings, lower and
+    // slower, so the drop reads as a delivery run, not a fly-past.
+    const zone = w.zones[w.dropIndex];
+    const dx = zone.x - p.x;
+    const dz = zone.z - p.z;
+    const wantHeading = Math.atan2(dx, dz);
+    let bearing = wantHeading - p.heading;
+    while (bearing > Math.PI) bearing -= 2 * Math.PI;
+    while (bearing < -Math.PI) bearing += 2 * Math.PI;
+    const steer = Math.max(-1, Math.min(1, bearing * 1.6));
+    // Transit high over the dunes, then sink to the low pass only once the
+    // outpost is close: descending early for a far zone meets a dune face.
+    const dist = Math.hypot(dx, dz);
+    const wantAlt = dist > 300 ? 40 : Math.max(0, zone.y - 1);
+    const pitch = Math.max(-1, Math.min(1, (wantAlt - p.y) / 26));
+    const over = Math.hypot(dx, dz) < zone.r * 0.8;
+    return { steer, pitch, throttle: throttleToward(p, 0.62), drop: over };
+  }
+  const landing = w.mode === 'drop' ? w.dropIndex >= w.zones.length : w.ringIndex >= w.rings.length;
   if (landing) {
     // Final approach in two parts. First, line up on the extended centreline
     // and hold 34 m: the valley floor off the strip is rough, so the plane
@@ -36,13 +56,16 @@ function autopilot(w) {
     while (err < -Math.PI) err += 2 * Math.PI;
     const gain = p.z > 4800 ? 2.6 : 1.8;
     const steer = Math.max(-1, Math.min(1, err * gain));
-    // The runway is only 32 m wide, so "lined up" means within 12 m of the
+    // The runway is 40 m wide, so "lined up" means within 12 m of the
     // centreline, not 25: descending at 20 m off-centre puts the wheels in
-    // the dunes beside the strip. Until then, hold 20 m, never lower.
+    // the dunes beside the strip. Until then, hold 20 m, never lower. But
+    // past z=5150 the strip is under the plane and the shoulders are flat,
+    // so the glide goes on regardless of lineup: holding 20 m past the
+    // threshold floats the plane off the far end of the valley.
     const linedUp = Math.abs(p.x) < 12;
     let wantAlt;
     if (p.z < 4950) wantAlt = 34;
-    else if (!linedUp) wantAlt = 20;
+    else if (!linedUp && p.z < 5150) wantAlt = 20;
     else wantAlt = Math.max(0, 20 - (p.z - 4950) * 0.075);
     const pitch = Math.max(-0.45, Math.min(0.7, (wantAlt - p.y) / 26));
     return { steer, pitch, throttle: throttleToward(p, 0.25) };
@@ -65,9 +88,10 @@ function autopilot(w) {
  * `opts.t` overrides the play-scene length in seconds; `opts.d` overrides
  * how many metres short of the third ring the ring scene stops — staging
  * knobs for choosing the best screenshot, same seed either way.
+ * `opts.mode` picks the mission the scene flies ('rings' or 'drop').
  */
 export function stageShot(name, world, opts = {}) {
-  resetWorld(world);
+  resetWorld(world, opts.mode === 'drop' ? 'drop' : 'rings');
   if (name !== 'play' && name !== 'ring' && name !== 'end') {
     for (let i = 0; i < START_SECONDS / STEP; i += 1) stepWorld(world, { steer: 0, pitch: 0, throttle: 0 });
     return { screen: 'title', best: 0 };

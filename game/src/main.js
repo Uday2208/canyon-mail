@@ -7,8 +7,8 @@
 // running the loop, paints it twice and sets window.__shotReady so a
 // screenshot knows the frame is settled.
 import { BEST_KEY, STEP } from './config.js';
-import { createWorld, resetWorld, stepWorld, nextTarget, EVENT_CRASH, EVENT_FUEL, EVENT_LANDED, EVENT_RING } from './world.js';
-import { ACTION_CONFIRM, ACTION_PAUSE, createInput } from './input.js';
+import { createWorld, resetWorld, stepWorld, nextTarget, EVENT_CRASH, EVENT_DROP, EVENT_FUEL, EVENT_LANDED, EVENT_RING } from './world.js';
+import { ACTION_CONFIRM, ACTION_MODE_DROP, ACTION_MODE_RINGS, ACTION_PAUSE, createInput } from './input.js';
 import { createRenderer } from './render.js';
 import { createAudio } from './audio.js';
 import { stageShot } from './shots.js';
@@ -47,6 +47,7 @@ function saveBest(value) {
 // numbers the HUD shows. Updated every frame; never written to disk.
 function publishFlight(screen) {
   const p = world.plane;
+  const target = nextTarget(world);
   window.__flight = {
     screen,
     alt: Math.round(Math.max(0, p.y - 1)),
@@ -57,6 +58,12 @@ function publishFlight(screen) {
     bank: Number(p.bank.toFixed(3)),
     rings: world.ringIndex,
     time: Math.round(world.time),
+    x: Math.round(p.x),
+    z: Math.round(p.z),
+    tgt: target.label,
+    tdist: Math.round(target.dist),
+    mode: world.mode,
+    drops: world.dropIndex,
   };
 }
 
@@ -64,6 +71,7 @@ function runShot(name) {
   const opts = {
     t: Number.parseFloat(params.get('t') ?? ''),
     d: Number.parseFloat(params.get('d') ?? ''),
+    mode: params.get('mode') === 'drop' ? 'drop' : 'rings',
   };
   const scene = stageShot(name, world, opts);
   let painted = 0;
@@ -81,6 +89,8 @@ function runGame() {
   const input = createInput(canvas);
   let screen = 'title';
   let best = readBest();
+  let mode = 'rings'; // the mission the title screen last picked
+  let dropQueued = false; // SPACE pressed in play: drop a parcel
   let accumulator = 0;
   let last = performance.now();
 
@@ -88,16 +98,20 @@ function runGame() {
     status.textContent = message;
   }
 
-  function startGame() {
-    resetWorld(world);
+  function startGame(pickedMode) {
+    mode = pickedMode ?? mode;
+    resetWorld(world, mode);
     accumulator = 0;
+    dropQueued = false;
     screen = 'play';
     // Cruise power on: the arrows alone must fly the plane, and W/S then
     // trim the throttle up or down from here.
     world.plane.throttle = 0.62;
     audio.ensure();
     audio.click();
-    announce('Flying. Six rings, then land on the far strip.');
+    announce(mode === 'drop'
+      ? 'Mail Drop. Three parcels to the outposts, then land on the far strip. SPACE drops a parcel.'
+      : 'Flying. Six rings, then land on the far strip.');
   }
 
   function endGame(landed) {
@@ -113,7 +127,10 @@ function runGame() {
 
   function handleActions() {
     const actions = input.takeActions();
-    if (actions & ACTION_CONFIRM && (screen === 'title' || screen === 'over' || screen === 'complete')) startGame();
+    if (actions & ACTION_MODE_RINGS && screen === 'title') startGame('rings');
+    else if (actions & ACTION_MODE_DROP && screen === 'title') startGame('drop');
+    else if (actions & ACTION_CONFIRM && screen === 'play') dropQueued = true;
+    else if (actions & ACTION_CONFIRM && (screen === 'title' || screen === 'over' || screen === 'complete')) startGame();
     else if (actions & ACTION_PAUSE && screen === 'play') {
       screen = 'paused';
       announce('Paused.');
@@ -129,11 +146,16 @@ function runGame() {
       stepWorld(world, { steer: 0, pitch: 0, throttle: 0 });
       return;
     }
-    const ctl = input.controls();
+    const ctl = { ...input.controls(), drop: dropQueued };
+    dropQueued = false;
     const events = stepWorld(world, ctl);
     if (events & EVENT_RING) {
       audio.ring();
       announce(`Ring ${world.ringIndex} of 6. Score ${world.score}.`);
+    }
+    if (events & EVENT_DROP) {
+      audio.ring();
+      announce(`Parcel ${world.dropIndex} of 3 delivered. Score ${world.score}.`);
     }
     if (events & EVENT_FUEL) announce('Fuel empty — gliding. Find the strip.');
     if (events & EVENT_LANDED) endGame(true);

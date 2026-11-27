@@ -3,6 +3,7 @@
 // climbing bleeds speed, diving gains it, and below stall speed the nose
 // drops on its own. Fuel is the clock: full throttle burns it fastest.
 import { PLANE } from './config.js';
+import { groundHeight, onRunway } from './terrain.js';
 
 export function createPlane() {
   return {
@@ -54,10 +55,27 @@ export function stepPlane(p, ctl, dt) {
   const forward = p.speed * dt;
   p.x += Math.sin(p.heading) * forward;
   p.z += Math.cos(p.heading) * forward;
+  const yBefore = p.y;
   if (flying) {
     p.y += Math.sin(p.pitch) * p.speed * dt;
     // A slow plane sinks even level: lift needs airspeed.
     if (p.speed < PLANE.cruiseSpeed) p.y -= (PLANE.cruiseSpeed - p.speed) * 0.05 * dt;
+  }
+  // Ground effect over the landing strip — and over any flat ground beside
+  // it: within 12 m of level earth the cushion of air under the wings caps
+  // the sink rate, and low over the strip the wings ease level by
+  // themselves — the flare a pilot feels in the stick, not a button. It
+  // steadies a touchdown; it never flies the plane, and a fast or wild
+  // arrival still breaks up.
+  if (flying) {
+    const ground = groundHeight(p.x, p.z);
+    const heightAbove = p.y - ground;
+    if (heightAbove < 12 && (onRunway(p.x, p.z) || ground <= 2.5)) {
+      const maxDrop = 3 * dt;
+      if (yBefore - p.y > maxDrop) p.y = yBefore - maxDrop;
+      const levelRate = heightAbove < 6 ? 2.6 : 1.2;
+      p.bank += Math.min(levelRate * dt, Math.max(-levelRate * dt, 0 - p.bank));
+    }
   }
 
   // Take off: enough speed and a little pull and the wheels leave the strip.

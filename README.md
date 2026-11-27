@@ -22,8 +22,9 @@ descent and wings level.
   flat-topped mesas, canyon walls, two runways, sun and drifting clouds.
 - The mail plane in frame with lit instruments: attitude indicator, airspeed
   and altimeter dials, compass tape, fuel and throttle bars, plus a HUD with
-  altitude, speed, heading, score, rings and the next target's distance and
-  bearing.
+  altitude, speed, heading, score, rings and the next target's distance,
+  bearing — and its altitude, with a climb/descend cue, so a pilot can line
+  up the ring in height as well as in heading.
 - Six rings with different heights and positions, fuel and damage as the
   decisions, a timer, and a score with a time bonus for a quick delivery.
 - Synthesized sound only (WebAudio): engine hum, ring chime, crash, landing

@@ -109,8 +109,13 @@ export function createRenderer(canvas) {
   }
 
   // Ground, painted far to near so nearer ground covers farther ground:
-  // each depth slice draws its ground band, then the river and runway
-  // segments and any mesa that stands in that slice.
+  // each depth slice draws its ground band. The river, the runways and
+  // the mesas are drawn after the whole ground, as continuous shapes:
+  // a runway drawn slice by slice came out as a zipper of black triangles,
+  // because the ground quads of nearer slices lean across the strip and
+  // eat into it. What the pilot sees is the flat strip, so the strip is
+  // painted last over the lean, and the mesas after it so rock still
+  // occludes asphalt where it stands in front.
   function drawGround(cam) {
     const slices = [];
     let d = 26;
@@ -118,7 +123,7 @@ export function createRenderer(canvas) {
       slices.push(d);
       d *= 1.14;
     }
-    const xs = [-460, -345, -230, -115, 0, 115, 230, 345, 460];
+    const xs = [-460, -402.5, -345, -287.5, -230, -172.5, -115, -57.5, 0, 57.5, 115, 172.5, 230, 287.5, 345, 402.5, 460];
     for (let s = slices.length - 2; s >= 0; s -= 1) {
       const z0 = cam.z + slices[s];
       const z1 = cam.z + slices[s + 1];
@@ -146,41 +151,56 @@ export function createRenderer(canvas) {
         ctx.closePath();
         ctx.fill();
       }
-      drawRiverSegment(cam, z0, z1, haze);
-      drawRunwaySegment(cam, COURSE.startRunway, z0, z1);
-      drawRunwaySegment(cam, COURSE.landRunway, z0, z1);
-      for (const m of MESAS) {
-        if (m.z >= z0 && m.z < z1) drawMesa(cam, m);
+    }
+    drawRiverStrip(cam);
+    drawRunwayFull(cam, COURSE.startRunway);
+    drawRunwayFull(cam, COURSE.landRunway);
+    const inView = MESAS.filter((m) => m.z > cam.z - 50 && m.z < cam.z + 950)
+      .sort((a, b) => b.z - a.z);
+    for (const m of inView) drawMesa(cam, m);
+  }
+
+  // The river as one continuous strip, sampled every 25 m and faded in
+  // 100 m chunks: no slice boundaries, so no hard rectangular edge where
+  // a chunk ends — the far end dissolves into the haze instead of
+  // stopping at a straight line.
+  function drawRiverStrip(cam) {
+    const zStart = cam.z + 20;
+    const zEnd = cam.z + 950;
+    for (let z0 = zStart; z0 < zEnd; z0 += 100) {
+      const z1 = Math.min(zEnd, z0 + 100);
+      const haze = Math.min(0.5, ((z0 + z1) / 2 - cam.z) / 950 * 0.7);
+      const left = [];
+      const right = [];
+      let ok = true;
+      for (let z = z0; z <= z1; z += 25) {
+        const rx = riverX(z);
+        const y = groundHeight(rx, z) + 0.4;
+        const l = project(cam, rx - 13, y, z);
+        const r = project(cam, rx + 13, y, z);
+        if (!l || !r) { ok = false; break; }
+        left.push(l);
+        right.push(r);
       }
+      if (!ok || left.length < 2) continue;
+      ctx.fillStyle = lerpColor(GROUND_COLORS.water, '#e9cda6', haze);
+      ctx.beginPath();
+      ctx.moveTo(left[0].sx, left[0].sy);
+      for (let i = 1; i < left.length; i += 1) ctx.lineTo(left[i].sx, left[i].sy);
+      for (let i = right.length - 1; i >= 0; i -= 1) ctx.lineTo(right[i].sx, right[i].sy);
+      ctx.closePath();
+      ctx.fill();
     }
   }
 
-  function drawRiverSegment(cam, z0, z1, haze) {
-    const rx0 = riverX(z0);
-    const rx1 = riverX(z1);
-    const a = project(cam, rx0 - 13, groundHeight(rx0, z0) + 0.4, z0);
-    const b = project(cam, rx0 + 13, groundHeight(rx0, z0) + 0.4, z0);
-    const c = project(cam, rx1 + 13, groundHeight(rx1, z1) + 0.4, z1);
-    const e = project(cam, rx1 - 13, groundHeight(rx1, z1) + 0.4, z1);
-    if (!a || !b || !c || !e) return;
-    ctx.fillStyle = lerpColor(GROUND_COLORS.water, '#e9cda6', haze);
-    ctx.beginPath();
-    ctx.moveTo(a.sx, a.sy);
-    ctx.lineTo(b.sx, b.sy);
-    ctx.lineTo(c.sx, c.sy);
-    ctx.lineTo(e.sx, e.sy);
-    ctx.closePath();
-    ctx.fill();
-  }
-
-  function drawRunwaySegment(cam, rw, z0, z1) {
-    const a0 = Math.max(rw.z0, z0);
-    const a1 = Math.min(rw.z1, z1);
-    if (a1 <= a0) return;
-    const a = project(cam, rw.x0, 0.4, a0);
-    const b = project(cam, rw.x1, 0.4, a0);
-    const c = project(cam, rw.x1, 0.4, a1);
-    const e = project(cam, rw.x0, 0.4, a1);
+  // One runway, one polygon from threshold to threshold: a continuous
+  // strip with its centreline dashes, painted over the ground in a
+  // single pass so it never zippers.
+  function drawRunwayFull(cam, rw) {
+    const a = project(cam, rw.x0, 0.4, rw.z0);
+    const b = project(cam, rw.x1, 0.4, rw.z0);
+    const c = project(cam, rw.x1, 0.4, rw.z1);
+    const e = project(cam, rw.x0, 0.4, rw.z1);
     if (!a || !b || !c || !e) return;
     ctx.fillStyle = GROUND_COLORS.runway;
     ctx.beginPath();
@@ -190,10 +210,8 @@ export function createRenderer(canvas) {
     ctx.lineTo(e.sx, e.sy);
     ctx.closePath();
     ctx.fill();
-    // Centreline dashes that fall inside this slice.
     ctx.fillStyle = GROUND_COLORS.runwayLine;
     for (let z = rw.z0 + 12; z < rw.z1 - 8; z += 44) {
-      if (z < a0 || z >= a1) continue;
       const d1 = project(cam, -1.2, 0.6, z);
       const d2 = project(cam, 1.2, 0.6, z);
       const d3 = project(cam, 1.2, 0.6, z + 20);
@@ -226,7 +244,17 @@ export function createRenderer(canvas) {
       ctx.ellipse(shC.sx, shC.sy, Math.abs(f2.sx - f1.sx) * 0.55, Math.max(4, 8 * shC.s), 0, 0, Math.PI * 2);
       ctx.fill();
     }
-    // Face: warm light at the top, deep shadow at the base.
+    // Face: warm light at the top, deep shadow at the base. The top edge is
+    // stepped, not straight — a mesa rim is broken rock, not a roofline —
+    // with a small deterministic jog per segment so the same mesa keeps
+    // the same silhouette every run.
+    const steps = 5;
+    const topPts = [];
+    for (let i = 0; i <= steps; i += 1) {
+      const t = i / steps;
+      const jog = (Math.sin(m.x * 0.37 + m.z * 0.11 + i * 2.7) * 0.5 + 0.5 - 0.5) * (f1.sy - f4.sy) * 0.09;
+      topPts.push({ sx: f4.sx + (f3.sx - f4.sx) * t, sy: f4.sy + (f3.sy - f4.sy) * t - jog });
+    }
     const fg = ctx.createLinearGradient(0, f4.sy, 0, f1.sy);
     fg.addColorStop(0, '#a9744f');
     fg.addColorStop(1, '#5f3a20');
@@ -235,9 +263,26 @@ export function createRenderer(canvas) {
     ctx.moveTo(f1.sx, f1.sy);
     ctx.lineTo(f2.sx, f2.sy);
     ctx.lineTo(f3.sx, f3.sy);
-    ctx.lineTo(f4.sx, f4.sy);
+    for (let i = steps - 1; i >= 0; i -= 1) ctx.lineTo(topPts[i].sx, topPts[i].sy);
     ctx.closePath();
     ctx.fill();
+    // Strata: horizontal bands of rock laid over the face, clipped to it,
+    // so the mesa reads as layered stone instead of a painted box.
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(f1.sx, f1.sy);
+    ctx.lineTo(f2.sx, f2.sy);
+    ctx.lineTo(f3.sx, f3.sy);
+    for (let i = steps - 1; i >= 0; i -= 1) ctx.lineTo(topPts[i].sx, topPts[i].sy);
+    ctx.closePath();
+    ctx.clip();
+    const bands = ['rgba(70,42,22,0.35)', 'rgba(214,150,96,0.30)', 'rgba(70,42,22,0.28)'];
+    for (let i = 0; i < 3; i += 1) {
+      const fy = f4.sy + (f1.sy - f4.sy) * (0.3 + i * 0.22);
+      ctx.fillStyle = bands[i];
+      ctx.fillRect(Math.min(f1.sx, f4.sx) - 10, fy, Math.abs(f2.sx - f1.sx) + 20, Math.max(2, (f1.sy - f4.sy) * 0.05));
+    }
+    ctx.restore();
     const t1 = project(cam, m.x - m.r, top, m.z - m.r * 0.6);
     const t2 = project(cam, m.x + m.r, top, m.z - m.r * 0.6);
     if (t1 && t2) {
@@ -252,12 +297,12 @@ export function createRenderer(canvas) {
       ctx.lineTo(t1.sx, t1.sy);
       ctx.closePath();
       ctx.fill();
-      // Sunlit rim along the front top edge.
+      // Sunlit rim along the stepped front top edge.
       ctx.strokeStyle = 'rgba(255,205,140,0.7)';
       ctx.lineWidth = Math.max(1, (f3.sx - f4.sx) * 0.004);
       ctx.beginPath();
-      ctx.moveTo(f4.sx, f4.sy);
-      ctx.lineTo(f3.sx, f3.sy);
+      ctx.moveTo(topPts[0].sx, topPts[0].sy);
+      for (let i = 1; i <= steps; i += 1) ctx.lineTo(topPts[i].sx, topPts[i].sy);
       ctx.stroke();
     }
   }
@@ -268,21 +313,70 @@ export function createRenderer(canvas) {
       const p = project(cam, c.x, c.y, c.z);
       if (!p) continue;
       const r = Math.max(4, c.s * p.s * 0.9);
-      // One blob, filled once, with a shadow crescent clipped to its lower
-      // half: overlapping ellipses in two tones left visible seams.
+      // A puff, not a saucer: a tall main lobe with a top lobe and two
+      // side lobes, and only a soft shadow underneath — the old flat disc
+      // with a hard crescent read as a flying saucer over the sun.
       ctx.save();
       ctx.beginPath();
-      ctx.ellipse(p.sx, p.sy, r, r * 0.36, 0, 0, Math.PI * 2);
-      ctx.ellipse(p.sx - r * 0.7, p.sy + r * 0.08, r * 0.6, r * 0.26, 0, 0, Math.PI * 2);
-      ctx.ellipse(p.sx + r * 0.7, p.sy + r * 0.08, r * 0.6, r * 0.26, 0, 0, Math.PI * 2);
+      ctx.ellipse(p.sx, p.sy, r, r * 0.52, 0, 0, Math.PI * 2);
+      ctx.ellipse(p.sx - r * 0.7, p.sy + r * 0.06, r * 0.6, r * 0.34, 0, 0, Math.PI * 2);
+      ctx.ellipse(p.sx + r * 0.7, p.sy + r * 0.06, r * 0.6, r * 0.34, 0, 0, Math.PI * 2);
+      ctx.ellipse(p.sx, p.sy - r * 0.2, r * 0.55, r * 0.3, 0, 0, Math.PI * 2);
       ctx.clip();
       ctx.fillStyle = 'rgba(255,246,232,0.88)';
-      ctx.fillRect(p.sx - r * 1.4, p.sy - r * 0.5, r * 2.8, r);
-      ctx.fillStyle = 'rgba(200,175,145,0.5)';
+      ctx.fillRect(p.sx - r * 1.4, p.sy - r * 0.6, r * 2.8, r * 1.1);
+      ctx.fillStyle = 'rgba(200,175,145,0.3)';
       ctx.beginPath();
-      ctx.ellipse(p.sx, p.sy + r * 0.3, r * 1.05, r * 0.3, 0, 0, Math.PI * 2);
+      ctx.ellipse(p.sx, p.sy + r * 0.32, r * 1.05, r * 0.22, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
+    }
+  }
+
+  // The Mail Drop outposts: an amber ring painted on the ground around
+  // each camp, with a smoke column rising over it so the pilot can find
+  // it from far away. A delivered outpost goes quiet — its ring and smoke
+  // are gone, and the next one is the only beacon left.
+  function drawDropZones(cam, zones, now) {
+    for (const zone of zones) {
+      if (zone.delivered) continue;
+      const gy = groundHeight(zone.x, zone.z);
+      const pts = [];
+      let ok = true;
+      for (let i = 0; i < 12; i += 1) {
+        const a = (i / 12) * Math.PI * 2;
+        const q = project(cam, zone.x + Math.cos(a) * zone.r, gy + 0.6, zone.z + Math.sin(a) * zone.r);
+        if (!q) { ok = false; break; }
+        pts.push(q);
+      }
+      if (ok) {
+        ctx.strokeStyle = '#ffb52e';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(pts[0].sx, pts[0].sy);
+        for (let i = 1; i < pts.length; i += 1) ctx.lineTo(pts[i].sx, pts[i].sy);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(pts[0].sx, pts[0].sy);
+        for (let i = 1; i < pts.length; i += 1) ctx.lineTo(pts[i].sx, pts[i].sy);
+        ctx.closePath();
+        ctx.stroke();
+      }
+      // Smoke column: three puffs drifting up over the camp, swaying a
+      // little with the clock so the beacon feels alive.
+      for (let i = 0; i < 3; i += 1) {
+        const sway = Math.sin(now * 0.7 + i * 1.9) * 4;
+        const q = project(cam, zone.x + sway, gy + 14 + i * 13, zone.z);
+        if (!q) continue;
+        const r = Math.max(3, (10 + i * 5) * q.s);
+        ctx.fillStyle = `rgba(235,228,218,${0.5 - i * 0.12})`;
+        ctx.beginPath();
+        ctx.ellipse(q.sx, q.sy, r, r * 0.7, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
   }
 
@@ -568,6 +662,13 @@ export function createRenderer(canvas) {
     }
     bar(880, 'FUEL', p.fuel / 100, p.fuel < 25 ? '#ff5a4e' : '#4ecb71');
     bar(930, 'THR', p.throttle, '#ffb52e');
+    // The numbers the bars stand for: fuel is a decision, so it reads in
+    // percent, not just as a green bar.
+    ctx.fillStyle = '#e8f4ff';
+    ctx.font = 'bold 12px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${Math.round(p.fuel)}%`, 893, 714);
+    ctx.fillText(`${Math.round(p.throttle * 100)}%`, 943, 714);
     // Trim / flap state text, right side.
     ctx.fillStyle = '#e8f4ff';
     ctx.font = 'bold 15px monospace';
@@ -576,6 +677,33 @@ export function createRenderer(canvas) {
     ctx.fillStyle = p.fuel < 25 ? '#ff5a4e' : '#9fb6c6';
     ctx.font = '13px monospace';
     ctx.fillText(p.fuel < 25 ? 'LOW FUEL' : 'FUEL OK', 990, 672);
+  }
+
+  // Ring guide: the one number the old HUD never showed — how high the next
+  // target sits, and whether to climb or descend to it. A pilot steering
+  // onto the bearing alone could still fly 20 m over or under the ring and
+  // orbit it until the tanks ran dry; this line closes that gap. On the
+  // final approach it becomes the glide slope instead: the ideal 3-degree
+  // path to the threshold, and where the plane sits against it.
+  function drawRingGuide(w, target) {
+    const p = w.plane;
+    const altM = Math.max(0, Math.round(p.y - 1));
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 18px monospace';
+    ctx.fillStyle = '#8fe3ff';
+    ctx.shadowColor = 'rgba(0,0,0,0.7)';
+    ctx.shadowBlur = 6;
+    if (target.isRunway && target.label !== 'LANDED') {
+      const idealAlt = 2 + target.dist * 0.055;
+      const diff = Math.round(altM - idealAlt);
+      const cue = diff > 6 ? `▲ ${diff} M ABOVE GLIDE` : diff < -6 ? `▼ ${-diff} M BELOW GLIDE` : '◆ ON GLIDE PATH';
+      ctx.fillText(`GLIDE PATH  ${cue}`, CX, 64);
+    } else {
+      const diff = target.alt - altM;
+      const cue = diff > 8 ? `▲ CLIMB ${diff} M` : diff < -8 ? `▼ DESCEND ${-diff} M` : '◆ ON ALTITUDE';
+      ctx.fillText(`TARGET ALT ${target.alt} M  ${cue}`, CX, 64);
+    }
+    ctx.shadowBlur = 0;
   }
 
   function drawHUD(w, target) {
@@ -596,7 +724,7 @@ export function createRenderer(canvas) {
     ctx.font = 'bold 22px monospace';
     ctx.fillText(`SCORE ${w.score}`, W - 24, 44);
     ctx.font = '18px monospace';
-    ctx.fillText(`RINGS ${w.ringIndex}/${w.rings.length}`, W - 24, 72);
+    ctx.fillText(w.mode === 'drop' ? `DROPS ${w.dropIndex}/${w.zones.length}` : `RINGS ${w.ringIndex}/${w.rings.length}`, W - 24, 72);
     const mm = Math.floor(w.time / 60);
     const ss = Math.floor(w.time % 60);
     ctx.fillText(`TIME ${mm}:${String(ss).padStart(2, '0')}`, W - 24, 100);
@@ -606,6 +734,7 @@ export function createRenderer(canvas) {
     ctx.fillStyle = '#ffb52e';
     const arrow = target.bearing > 0.25 ? '▶' : target.bearing < -0.25 ? '◀' : '▲';
     ctx.fillText(`${target.label}  ${Math.round(target.dist)} M  ${arrow}`, CX, 40);
+    drawRingGuide(w, target);
     // Centre reticle.
     ctx.strokeStyle = 'rgba(255,255,255,0.65)';
     ctx.lineWidth = 2;
@@ -645,7 +774,8 @@ export function createRenderer(canvas) {
       drawSky(cam, now);
       drawGround(cam);
       drawClouds(cam);
-      drawRings(cam, state.rings);
+      if (state.mode === 'drop') drawDropZones(cam, state.zones, now);
+      else drawRings(cam, state.rings);
       if (screen === 'play' || screen === 'paused' || screen === 'over' || screen === 'complete') {
         drawPlane(p, now);
       } else {
@@ -662,10 +792,12 @@ export function createRenderer(canvas) {
       drawInstruments(p, now);
       if (screen === 'title') {
         drawOverlay('CANYON MAIL', [
-          'Fly the mail through six rings, then land on the far strip.',
-          'Arrows fly the nose  •  W / S work the throttle  •  Mouse steers too',
-          'Watch the fuel: every ring buys you 12% back. Gentle on the strip.',
-          'Press SPACE or click to fly.',
+          'Two missions, one valley:',
+          '1 — RING RUN: six rings, then land on the far strip.',
+          '2 — MAIL DROP: three parcels to the outposts, then land.',
+          'Arrows or mouse fly the nose  •  W / S work the throttle  •  SPACE drops a parcel',
+          'Watch the fuel: every ring or drop buys you 10% back. Gentle on the strip.',
+          'Press 1, 2 or SPACE to fly.',
           best > 0 ? `Best score: ${best}` : 'First flight: the canyon is waiting.',
         ], '#ffb52e', 0.45);
       } else if (screen === 'paused') {

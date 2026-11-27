@@ -1,9 +1,12 @@
 // Keyboard and mouse, one job: turn what the pilot does into the three
 // numbers the flight model reads — steer, pitch and throttle — plus the
-// one-shot actions (confirm, pause). Keyboard wins when keys are held; the
-// mouse steers toward where it points the rest of the time.
+// one-shot actions (confirm, pause, pick a mission, drop a parcel).
+// Keyboard wins when keys are held; the mouse steers toward where it
+// points the rest of the time.
 export const ACTION_CONFIRM = 1;
 export const ACTION_PAUSE = 2;
+export const ACTION_MODE_RINGS = 4;
+export const ACTION_MODE_DROP = 8;
 
 export function createInput(canvas) {
   const keys = new Set();
@@ -19,6 +22,8 @@ export function createInput(canvas) {
     if (!e.repeat) {
       if (e.code === 'Space' || e.code === 'Enter') actions |= ACTION_CONFIRM;
       if (e.code === 'KeyP' || e.code === 'Escape') actions |= ACTION_PAUSE;
+      if (e.code === 'Digit1' || e.code === 'Numpad1') actions |= ACTION_MODE_RINGS;
+      if (e.code === 'Digit2' || e.code === 'Numpad2') actions |= ACTION_MODE_DROP;
     }
     keys.add(keyName(e));
   });
